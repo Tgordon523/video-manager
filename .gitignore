@@ -216,3 +216,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Project-specific ---
+
+# macOS Finder metadata
+.DS_Store
+
+# rclone config holds Google Drive OAuth tokens and client secrets
+rclone.conf
+config/rclone/
+
+# Downloaded video files (private and large; the scanner pulls these from Drive)
+*.mp4
+*.mov
+*.mkv
+*.webm
+/data/
+media/
