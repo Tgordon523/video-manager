@@ -1,0 +1,41 @@
+<div class="modal-overlay" onclick="if(event.target===this){document.getElementById('modal').innerHTML=''}">
+  <div class="modal">
+    <button class="modal-close" title="Close"
+            onclick="document.getElementById('modal').innerHTML=''">×</button>
+    <h2 class="modal-title">{{ video.name }}</h2>
+
+    <div class="modal-meta">
+      <span class="badge badge-{{ video.download_status }}">{{ video.download_status }}</span>
+      {% if video.duration_seconds %}<span>⏱ {{ video.duration_seconds|duration }}</span>{% endif %}
+      {% if video.size_bytes %}<span>💾 {{ video.size_bytes|filesize }}</span>{% endif %}
+      {% if video.drive_modified_at %}<span>📅 {{ video.drive_modified_at.strftime('%Y-%m-%d') }}</span>{% endif %}
+      <span>📋 {{ video.column.name }}</span>
+    </div>
+
+    {% if video.download_status == 'downloaded' %}
+      <video class="player" controls preload="metadata" src="/media/{{ video.id }}"></video>
+    {% elif video.download_status == 'error' %}
+      <p class="error">Download failed: {{ video.download_error }}</p>
+    {% else %}
+      <div class="downloading-note"
+           hx-get="/videos/{{ video.id }}" hx-target="#modal" hx-swap="innerHTML"
+           hx-trigger="every 3s">
+        Downloading from Drive… (status: {{ video.download_status }})
+      </div>
+    {% endif %}
+
+    <section class="notes">
+      <h3>Notes</h3>
+      <form hx-post="/videos/{{ video.id }}/notes" hx-target="#notes-list" hx-swap="afterbegin"
+            hx-on::after-request="this.reset()">
+        <textarea name="body" placeholder="Add a progress note or idea…" required></textarea>
+        <button type="submit" class="btn">Add note</button>
+      </form>
+      <div id="notes-list">
+        {% for note in video.notes %}
+          {% include "_note.html" %}
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</div>

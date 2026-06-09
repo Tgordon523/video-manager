@@ -1,0 +1,21 @@
+<div class="card status-{{ video.download_status }}" data-video-id="{{ video.id }}"
+     hx-get="/videos/{{ video.id }}" hx-target="#modal" hx-swap="innerHTML" hx-trigger="click">
+  {% if video.thumbnail_path %}
+    <img class="thumb" src="/thumbnails/{{ video.id }}" alt="" loading="lazy">
+  {% else %}
+    <div class="thumb thumb-empty">🎞</div>
+  {% endif %}
+  <div class="card-body">
+    <div class="card-title">{{ video.name }}</div>
+    <div class="card-meta">
+      <span class="badge badge-{{ video.download_status }}">{{ video.download_status }}</span>
+      {% if video.duration_seconds %}<span>{{ video.duration_seconds|duration }}</span>{% endif %}
+      {% if video.size_bytes %}<span>{{ video.size_bytes|filesize }}</span>{% endif %}
+      {% if video.notes %}<span class="notecount">📝 {{ video.notes|length }}</span>{% endif %}
+    </div>
+  </div>
+  {% if video.download_status in ['pending', 'downloading'] %}
+  <span class="poller" hx-get="/videos/{{ video.id }}/card" hx-trigger="every 3s"
+        hx-target="closest .card" hx-swap="outerHTML"></span>
+  {% endif %}
+</div>

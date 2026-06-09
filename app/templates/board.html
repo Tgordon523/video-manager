@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="topbar">
+  <h1>🎬 Video Manager</h1>
+  <div class="topbar-actions">
+    <form hx-post="/scan" hx-target="#board" hx-swap="outerHTML" hx-indicator="#scan-spinner">
+      <button type="submit" class="btn">Scan now</button>
+      <span id="scan-spinner" class="htmx-indicator">scanning…</span>
+    </form>
+    <form class="add-column" hx-post="/columns" hx-target="#board" hx-swap="outerHTML"
+          hx-on::after-request="this.reset()">
+      <input name="name" placeholder="New column" required>
+      <button type="submit" class="btn">+ Column</button>
+    </form>
+  </div>
+</header>
+
+{% if not settings.rclone_remote %}
+<div class="warning">
+  <strong>RCLONE_REMOTE is not set.</strong> Configure rclone and set the env vars
+  (see README) so new videos can be discovered from Google Drive.
+</div>
+{% endif %}
+
+{% include "_board.html" %}
+{% endblock %}
