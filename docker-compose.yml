@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-videos}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-videos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-videos}
+      RCLONE_REMOTE: ${RCLONE_REMOTE}
+      RCLONE_DRIVE_PATH: ${RCLONE_DRIVE_PATH:-}
+      RCLONE_CONFIG: /config/rclone/rclone.conf
+      MEDIA_DIR: /data/videos
+      SCAN_INTERVAL_SECONDS: ${SCAN_INTERVAL_SECONDS:-300}
+    ports:
+      # Bind to localhost only — this app has no auth, do not expose publicly.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # rclone config (read-write so OAuth tokens can refresh).
+      - ${RCLONE_CONFIG_DIR}:/config/rclone
+      # Downloaded video files.
+      - media:/data/videos
+
+volumes:
+  pgdata:
+  media:

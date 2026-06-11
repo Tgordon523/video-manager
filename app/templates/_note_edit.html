@@ -1,0 +1,9 @@
+<form class="note note-editing" id="note-{{ note.id }}"
+      hx-patch="/notes/{{ note.id }}" hx-target="#note-{{ note.id }}" hx-swap="outerHTML">
+  <textarea name="body" required>{{ note.body }}</textarea>
+  <div class="note-meta">
+    <button type="submit" class="link">save</button>
+    <button type="button" class="link" hx-get="/notes/{{ note.id }}"
+            hx-target="#note-{{ note.id }}" hx-swap="outerHTML">cancel</button>
+  </div>
+</form>

@@ -1,0 +1,14 @@
+<section class="column">
+  <div class="column-head">
+    <span class="col-name">{{ column.name }}</span>
+    <span class="col-count">{{ column.videos|length }}</span>
+    <button class="col-del" title="Delete column"
+            hx-delete="/columns/{{ column.id }}" hx-target="#board" hx-swap="outerHTML"
+            hx-confirm="Delete column '{{ column.name }}'?">×</button>
+  </div>
+  <div class="cards" data-column-id="{{ column.id }}">
+    {% for video in column.videos %}
+      {% include "_card.html" %}
+    {% endfor %}
+  </div>
+</section>
