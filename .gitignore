@@ -222,6 +222,11 @@ __marimo__/
 # macOS Finder metadata
 .DS_Store
 
+# Claude Code tooling (local settings, agent skills cache)
+.claude/
+.agents/
+skills-lock.json
+
 # rclone config holds Google Drive OAuth tokens and client secrets
 rclone.conf
 config/rclone/

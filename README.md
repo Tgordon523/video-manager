@@ -75,6 +75,17 @@ the background scanner automatically.
 - The web layer is server-rendered FastAPI + Jinja with HTMX for partial updates and SortableJS for
   drag-and-drop. Video is served via `FileResponse` with HTTP Range support so you can seek.
 
+### Module layout
+
+| Module | Responsibility |
+|---|---|
+| `app/scanner.py` | Drive polling loop + download worker; exposes `background_tasks()` |
+| `app/repository.py` | `VideoRepository` — all scanner-side DB reads/writes |
+| `app/rclone.py` | `DriveAdapter` protocol + `RcloneAdapter` wrapping the rclone CLI |
+| `app/ordering.py` | Position arithmetic for columns and video cards |
+| `app/routes/` | Route handlers split by resource: `board`, `videos`, `columns`, `notes` |
+| `app/web.py` | Jinja2 env + template filters (registered via `_register_filters()`) |
+
 ## Data & persistence
 
 - Postgres data → `pgdata` volume; downloaded videos → `media` volume.
@@ -93,3 +104,6 @@ Run the tests (no Docker needed; uses an in-memory SQLite DB):
 uv sync
 uv run pytest
 ```
+
+`VideoRepository` and `DriveAdapter` are injectable, so scanner tests stub out both the DB session
+factory and the rclone CLI — no real Drive credentials needed.
