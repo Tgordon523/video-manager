@@ -238,3 +238,7 @@ config/rclone/
 *.webm
 /data/
 media/
+
+# Test artefacts (conftest creates a temp SQLite file per run)
+*.db
+*.sqlite
