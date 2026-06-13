@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..db import get_session
+from ..deps import get_or_404
 from ..models import BoardColumn, Video
 from ..ordering import renumber_column
 from ..web import templates
@@ -34,9 +35,7 @@ async def move_video(
     position: int = Form(...),
     session: AsyncSession = Depends(get_session),
 ):
-    video = await session.get(Video, video_id)
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+    video = await get_or_404(session, Video, video_id)
     target = await session.get(BoardColumn, column_id)
     if target is None:
         raise HTTPException(status_code=400, detail="Unknown column")

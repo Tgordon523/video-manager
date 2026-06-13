@@ -5,7 +5,13 @@ from sqlalchemy import func, select
 
 from app import scanner
 from app.models import BoardColumn, Video
+from app.repository import VideoRepository
+from app.scanner import ScanCoordinator
 
+
+# --------------------------------------------------------------------------- #
+# Pure-function tests — no DB, no coordinator needed
+# --------------------------------------------------------------------------- #
 
 def test_filter_videos_keeps_only_mp4_files():
     entries = [
@@ -23,6 +29,28 @@ def test_entry_file_id_prefers_drive_id():
     assert scanner.entry_file_id({"Name": "x.mp4"}) == "x.mp4"
 
 
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+class FakeAdapter:
+    """Fake DriveAdapter — no rclone, no network."""
+
+    def __init__(self, listing=None):
+        self.listing = listing or []
+        self.downloads: list[tuple[str, str]] = []
+
+    async def list_files(self, source: str) -> list[dict]:
+        return self.listing
+
+    async def download(self, source_file: str, dest: str) -> None:
+        self.downloads.append((source_file, dest))
+
+
+# --------------------------------------------------------------------------- #
+# Coordinator-based tests — each test gets its own isolated ScanCoordinator
+# --------------------------------------------------------------------------- #
+
 async def test_discover_inserts_and_dedups(db, monkeypatch):
     monkeypatch.setattr(scanner.settings, "rclone_remote", "gdrive")
     listing = [
@@ -32,16 +60,13 @@ async def test_discover_inserts_and_dedups(db, monkeypatch):
         {"ID": "3", "Name": "notes.txt", "Size": 5, "IsDir": False},
     ]
 
-    async def fake_list(source):
-        return listing
+    sc = ScanCoordinator(FakeAdapter(listing), VideoRepository())
 
-    monkeypatch.setattr(scanner.rclone, "list_files", fake_list)
-
-    new_ids = await scanner.discover()
+    new_ids = await sc.discover()
     assert len(new_ids) == 2  # the .txt is ignored
 
     # Re-running discovers nothing new (deduped by Drive file ID).
-    assert await scanner.discover() == []
+    assert await sc.discover() == []
 
     async with db() as session:
         count = (await session.execute(select(func.count(Video.id)))).scalar()
@@ -66,15 +91,16 @@ async def test_worker_drains_pending_and_recovers_interrupted(db, monkeypatch):
         ])
         await session.commit()
 
+    sc = ScanCoordinator(FakeAdapter(), VideoRepository())
     downloaded: list[int] = []
 
-    async def fake_download(video_id):
+    async def fake_download_video(video_id: int) -> None:
         downloaded.append(video_id)
-        await scanner._set_status(video_id, "downloaded")
+        await sc._repo.set_status(video_id, "downloaded")
 
-    monkeypatch.setattr(scanner, "_download_video", fake_download)
+    sc._download_video = fake_download_video
 
-    task = asyncio.create_task(scanner.download_worker())
+    task = asyncio.create_task(sc.download_worker())
     try:
         for _ in range(100):
             async with db() as session:

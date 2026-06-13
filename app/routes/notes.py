@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Form, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
+from ..deps import get_or_404
 from ..models import Note, Video
 from ..web import templates
 
@@ -15,8 +16,7 @@ async def add_note(
     body: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ):
-    if (await session.get(Video, video_id)) is None:
-        raise HTTPException(status_code=404, detail="Video not found")
+    await get_or_404(session, Video, video_id)
     body = body.strip()
     if not body:
         return Response(status_code=204)
@@ -31,9 +31,7 @@ async def add_note(
 async def show_note(
     note_id: int, request: Request, session: AsyncSession = Depends(get_session)
 ):
-    note = await session.get(Note, note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="Note not found")
+    note = await get_or_404(session, Note, note_id)
     return templates.TemplateResponse(request, "_note.html", {"note": note})
 
 
@@ -41,12 +39,8 @@ async def show_note(
 async def edit_note_form(
     note_id: int, request: Request, session: AsyncSession = Depends(get_session)
 ):
-    note = await session.get(Note, note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="Note not found")
-    return templates.TemplateResponse(
-        request, "_note_edit.html", {"note": note}
-    )
+    note = await get_or_404(session, Note, note_id)
+    return templates.TemplateResponse(request, "_note_edit.html", {"note": note})
 
 
 @router.patch("/notes/{note_id}")
@@ -56,9 +50,7 @@ async def update_note(
     body: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ):
-    note = await session.get(Note, note_id)
-    if note is None:
-        raise HTTPException(status_code=404, detail="Note not found")
+    note = await get_or_404(session, Note, note_id)
     note.body = body.strip() or note.body
     await session.commit()
     await session.refresh(note)

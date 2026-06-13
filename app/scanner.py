@@ -20,32 +20,14 @@ from sqlalchemy import select
 from . import media, rclone
 from .config import settings
 from .db import SessionLocal
-from .models import (
-    ERROR,
-    PENDING,
-    BoardColumn,
-    Video,
-)
+from .models import ERROR, PENDING, BoardColumn, Video
 from .ordering import next_video_position
 from .repository import VideoRepository
 
 logger = logging.getLogger("video_manager.scanner")
 
 VIDEO_EXTS = (".mp4",)
-
-# Safety-net re-check interval for the worker when it's idle; new work normally
-# wakes it immediately via the event below.
 IDLE_RECHECK_SECONDS = 30
-
-# Guards against overlapping discovery (background loop vs. manual "Scan now").
-_scan_lock = asyncio.Lock()
-
-# Signals the download worker that new pending rows may exist.
-_work_available = asyncio.Event()
-
-# Default adapter and repository; replace via monkeypatch or constructor injection in tests.
-_adapter = rclone.RcloneAdapter()
-_repo = VideoRepository()
 
 
 def is_video(name: str) -> bool:
@@ -71,178 +53,182 @@ def _parse_modtime(value: str | None) -> datetime | None:
         return None
 
 
-# --------------------------------------------------------------------------- #
-# Discovery
-# --------------------------------------------------------------------------- #
-async def discover(adapter: rclone.DriveAdapter = _adapter) -> list[int]:
-    """List Drive and insert rows for any new mp4s. Returns new video ids.
+class ScanCoordinator:
+    """Encapsulates all Drive scanning state. One instance per app; one per test."""
 
-    Newly inserted rows are left in ``pending``; the download worker picks them
-    up (it is woken via ``_work_available``).
-    """
-    if not settings.rclone_remote:
-        logger.warning("RCLONE_REMOTE is not set; skipping scan")
-        return []
-    if _scan_lock.locked():
-        return []
-    async with _scan_lock:
-        new_ids = await _discover(adapter)
-    if new_ids:
-        _work_available.set()
-    return new_ids
+    def __init__(self, adapter: rclone.DriveAdapter, repo: VideoRepository):
+        self._lock = asyncio.Lock()
+        self._ready = asyncio.Event()
+        self._adapter = adapter
+        self._repo = repo
 
+    # ------------------------------------------------------------------ #
+    # Discovery
+    # ------------------------------------------------------------------ #
+    async def discover(self) -> list[int]:
+        """List Drive and insert rows for any new mp4s. Returns new video ids."""
+        if not settings.rclone_remote:
+            logger.warning("RCLONE_REMOTE is not set; skipping scan")
+            return []
+        if self._lock.locked():
+            return []
+        async with self._lock:
+            new_ids = await self._run_discover()
+        if new_ids:
+            self._ready.set()
+        return new_ids
 
-async def _discover(adapter: rclone.DriveAdapter) -> list[int]:
-    source = settings.drive_source
-    try:
-        entries = await adapter.list_files(source)
-    except rclone.RcloneError as exc:
-        logger.error("rclone list failed: %s", exc)
-        return []
-
-    videos = filter_videos(entries)
-    new_ids: list[int] = []
-
-    async with SessionLocal() as session:
-        first_col = (
-            await session.execute(
-                select(BoardColumn).order_by(BoardColumn.position, BoardColumn.id)
-            )
-        ).scalars().first()
-        if first_col is None:
-            logger.warning("No board columns exist yet; skipping scan")
+    async def _run_discover(self) -> list[int]:
+        source = settings.drive_source
+        try:
+            entries = await self._adapter.list_files(source)
+        except rclone.RcloneError as exc:
+            logger.error("rclone list failed: %s", exc)
             return []
 
-        existing = set(
-            (await session.execute(select(Video.drive_file_id))).scalars().all()
-        )
-        next_pos = await next_video_position(session, first_col.id)
+        videos = filter_videos(entries)
+        new_ids: list[int] = []
 
-        for entry in videos:
-            fid = entry_file_id(entry)
-            if not fid or fid in existing:
-                continue
-            video = Video(
-                drive_file_id=fid,
-                name=entry.get("Name", fid),
-                drive_path=entry.get("Path"),
-                size_bytes=entry.get("Size"),
-                drive_modified_at=_parse_modtime(entry.get("ModTime")),
-                column_id=first_col.id,
-                position=next_pos,
-                download_status=PENDING,
+        async with SessionLocal() as session:
+            first_col = (
+                await session.execute(
+                    select(BoardColumn).order_by(BoardColumn.position, BoardColumn.id)
+                )
+            ).scalars().first()
+            if first_col is None:
+                logger.warning("No board columns exist yet; skipping scan")
+                return []
+
+            existing = set(
+                (await session.execute(select(Video.drive_file_id))).scalars().all()
             )
-            session.add(video)
-            await session.flush()
-            new_ids.append(video.id)
-            existing.add(fid)
-            next_pos += 1
+            next_pos = await next_video_position(session, first_col.id)
 
-        await session.commit()
+            for entry in videos:
+                fid = entry_file_id(entry)
+                if not fid or fid in existing:
+                    continue
+                video = Video(
+                    drive_file_id=fid,
+                    name=entry.get("Name", fid),
+                    drive_path=entry.get("Path"),
+                    size_bytes=entry.get("Size"),
+                    drive_modified_at=_parse_modtime(entry.get("ModTime")),
+                    column_id=first_col.id,
+                    position=next_pos,
+                    download_status=PENDING,
+                )
+                session.add(video)
+                await session.flush()
+                new_ids.append(video.id)
+                existing.add(fid)
+                next_pos += 1
 
-    return new_ids
+            await session.commit()
 
+        return new_ids
 
-# --------------------------------------------------------------------------- #
-# Thin wrapper kept for backward-compat (tests monkeypatch this name).
-# --------------------------------------------------------------------------- #
-async def _set_status(video_id: int, status: str, error: str | None = None) -> None:
-    await _repo.set_status(video_id, status, error)
+    # ------------------------------------------------------------------ #
+    # Downloading
+    # ------------------------------------------------------------------ #
+    async def _download_video(self, video_id: int) -> None:
+        result = await self._repo.get_for_download(video_id)
+        if result is None:
+            return
+        name, rel_path = result
 
+        os.makedirs(settings.media_dir, exist_ok=True)
+        ext = os.path.splitext(name)[1] or ".mp4"
+        dest = os.path.join(settings.media_dir, f"{video_id}{ext}")
+        source_file = f"{settings.drive_source}/{rel_path}"
 
-# --------------------------------------------------------------------------- #
-# Downloading
-# --------------------------------------------------------------------------- #
-async def _download_video(
-    video_id: int, adapter: rclone.DriveAdapter = _adapter
-) -> None:
-    result = await _repo.get_for_download(video_id)
-    if result is None:
-        return
-    name, rel_path = result
-
-    os.makedirs(settings.media_dir, exist_ok=True)
-    ext = os.path.splitext(name)[1] or ".mp4"
-    dest = os.path.join(settings.media_dir, f"{video_id}{ext}")
-    source_file = f"{settings.drive_source}/{rel_path}"
-
-    try:
-        await adapter.download(source_file, dest)
-    except rclone.RcloneError as exc:
-        logger.error("Download failed for %s: %s", name, exc)
-        await _repo.set_status(video_id, ERROR, str(exc))
-        return
-
-    duration = await media.probe_duration(dest)
-    thumb_path = os.path.join(settings.media_dir, f"{video_id}.jpg")
-    thumb_ok = await media.make_thumbnail(dest, thumb_path)
-
-    await _repo.mark_downloaded(
-        video_id,
-        dest,
-        duration,
-        thumb_path if thumb_ok else None,
-    )
-    logger.info("Downloaded %s -> %s", name, dest)
-
-
-# --------------------------------------------------------------------------- #
-# Background tasks (started from lifespan)
-# --------------------------------------------------------------------------- #
-async def download_worker() -> None:
-    """Drain pending downloads, retrying interrupted ones across restarts."""
-    logger.info("download worker started")
-    count = await _repo.reset_interrupted_downloads()
-    if count:
-        logger.info("Reset %s interrupted download(s) to pending", count)
-    while True:
-        # Clear before checking so a discovery that sets the event after our
-        # query (but before we wait) is never missed.
-        _work_available.clear()
-        video_id = None
         try:
-            video_id = await _repo.next_pending_id()
-            if video_id is None:
-                try:
-                    await asyncio.wait_for(
-                        _work_available.wait(), timeout=IDLE_RECHECK_SECONDS
-                    )
-                except asyncio.TimeoutError:
-                    pass
-                continue
-            await _download_video(video_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - one bad row must not kill the worker
-            logger.exception("download worker error")
+            await self._adapter.download(source_file, dest)
+        except rclone.RcloneError as exc:
+            logger.error("Download failed for %s: %s", name, exc)
+            await self._repo.set_status(video_id, ERROR, str(exc))
+            return
+
+        duration = await media.probe_duration(dest)
+        thumb_path = os.path.join(settings.media_dir, f"{video_id}.jpg")
+        thumb_ok = await media.make_thumbnail(dest, thumb_path)
+
+        await self._repo.mark_downloaded(
+            video_id, dest, duration, thumb_path if thumb_ok else None,
+        )
+        logger.info("Downloaded %s -> %s", name, dest)
+
+    # ------------------------------------------------------------------ #
+    # Background tasks
+    # ------------------------------------------------------------------ #
+    async def download_worker(self) -> None:
+        """Drain pending downloads, retrying interrupted ones across restarts."""
+        logger.info("download worker started")
+        count = await self._repo.reset_interrupted_downloads()
+        if count:
+            logger.info("Reset %s interrupted download(s) to pending", count)
+        while True:
+            # Clear before checking so a discovery that fires the event after our
+            # query (but before we wait) is never missed.
+            self._ready.clear()
+            video_id = None
             try:
-                if video_id is not None:
-                    await _repo.set_status(
-                        video_id, ERROR, "unexpected error during download"
-                    )
+                video_id = await self._repo.next_pending_id()
+                if video_id is None:
+                    try:
+                        await asyncio.wait_for(
+                            self._ready.wait(), timeout=IDLE_RECHECK_SECONDS
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
+                await self._download_video(video_id)
+            except asyncio.CancelledError:
+                raise
             except Exception:  # noqa: BLE001
-                logger.exception("failed to mark video errored")
+                logger.exception("download worker error")
+                try:
+                    if video_id is not None:
+                        await self._repo.set_status(
+                            video_id, ERROR, "unexpected error during download"
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.exception("failed to mark video errored")
+
+    async def scan_loop(self) -> None:
+        """Periodically discover new Drive files (downloads run in the worker)."""
+        logger.info(
+            "scanner started; interval=%ss source=%s",
+            settings.scan_interval_seconds,
+            settings.drive_source,
+        )
+        while True:
+            try:
+                new_ids = await self.discover()
+                if new_ids:
+                    logger.info("scan complete: %s new video(s)", len(new_ids))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("scan loop error")
+            await asyncio.sleep(settings.scan_interval_seconds)
+
+    def background_tasks(self) -> list:
+        """Return coroutines for both background tasks."""
+        return [self.download_worker(), self.scan_loop()]
 
 
-async def scan_loop() -> None:
-    """Periodically discover new Drive files (downloads run in the worker)."""
-    logger.info(
-        "scanner started; interval=%ss source=%s",
-        settings.scan_interval_seconds,
-        settings.drive_source,
-    )
-    while True:
-        try:
-            new_ids = await discover()
-            if new_ids:
-                logger.info("scan complete: %s new video(s)", len(new_ids))
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
-            logger.exception("scan loop error")
-        await asyncio.sleep(settings.scan_interval_seconds)
+# --------------------------------------------------------------------------- #
+# Module-level defaults — app uses these; tests instantiate ScanCoordinator
+# directly with fake adapters instead of monkeypatching these globals.
+# --------------------------------------------------------------------------- #
+coordinator = ScanCoordinator(rclone.RcloneAdapter(), VideoRepository())
+
+
+def get_coordinator() -> ScanCoordinator:
+    """FastAPI dependency returning the active ScanCoordinator."""
+    return coordinator
 
 
 def background_tasks() -> list:
-    """Return coroutines for the two background tasks started during app lifespan."""
-    return [download_worker(), scan_loop()]
+    return coordinator.background_tasks()
