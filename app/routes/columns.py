@@ -3,6 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
+from ..deps import get_or_404
 from ..models import BoardColumn, Video
 from ..ordering import next_column_position
 from ..web import load_board, templates
@@ -38,9 +39,7 @@ async def rename_column(
     name: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ):
-    column = await session.get(BoardColumn, column_id)
-    if column is None:
-        raise HTTPException(status_code=404, detail="Column not found")
+    column = await get_or_404(session, BoardColumn, column_id)
     name = name.strip()
     if name:
         column.name = name
@@ -54,9 +53,7 @@ async def delete_column(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    column = await session.get(BoardColumn, column_id)
-    if column is None:
-        raise HTTPException(status_code=404, detail="Column not found")
+    column = await get_or_404(session, BoardColumn, column_id)
     count = (
         await session.execute(
             select(func.count(Video.id)).where(Video.column_id == column_id)

@@ -5,5 +5,5 @@ set -euo pipefail
 echo "Running database migrations..."
 alembic upgrade head
 
-echo "Starting Video Manager on :8000"
+echo "Starting Video Manager → open http://localhost:8000 in your browser"
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000
